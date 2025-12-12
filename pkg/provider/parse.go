@@ -277,7 +277,7 @@ func validateBinaries(prefix string, binaries map[string][]*ProviderBinary) erro
 
 		for _, binary := range binaryArr {
 			if binary.OS != "linux" && binary.OS != "darwin" && binary.OS != "windows" && binary.OS != "android" {
-				return fmt.Errorf("unsupported binary operating system '%s', must be 'linux', 'darwin' or 'windows'", binary.OS)
+				return fmt.Errorf("unsupported binary operating system '%s', must be 'android', 'linux', 'darwin' or 'windows'", binary.OS)
 			}
 			if binary.Path == "" {
 				return fmt.Errorf("%s.%s.path required binary path, cannot be empty", prefix, binaryName)
