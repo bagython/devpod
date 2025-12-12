@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/loft-sh/devpod/pkg/agent/tunnel"
 	"github.com/loft-sh/log"
 	"github.com/loft-sh/log/scanner"
@@ -19,13 +21,37 @@ func NewTunnelLogger(ctx context.Context, client tunnel.TunnelClient, debug bool
 		level = logrus.DebugLevel
 	}
 
-	return &tunnelLogger{ctx: ctx, client: client, level: level}
+	logger := &tunnelLogger{
+		ctx:     ctx,
+		client:  client,
+		level:   level,
+		logChan: make(chan *tunnel.LogMessage, 1000), // Buffer size of 1000 messages
+	}
+
+	go logger.worker()
+
+	return logger
 }
 
 type tunnelLogger struct {
-	ctx    context.Context
-	level  logrus.Level
-	client tunnel.TunnelClient
+	ctx     context.Context
+	level   logrus.Level
+	client  tunnel.TunnelClient
+	logChan chan *tunnel.LogMessage
+}
+
+func (s *tunnelLogger) worker() {
+	for {
+		select {
+		case msg := <-s.logChan:
+			ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+			_, _ = s.client.Log(ctx, msg)
+			// ignore error since we can't use the logger itself
+			cancel()
+		case <-s.ctx.Done():
+			return
+		}
+	}
 }
 
 func (s *tunnelLogger) Debug(args ...interface{}) {
@@ -33,10 +59,10 @@ func (s *tunnelLogger) Debug(args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_DEBUG,
 		Message:  fmt.Sprintln(args...),
-	})
+	}
 }
 
 func (s *tunnelLogger) Debugf(format string, args ...interface{}) {
@@ -44,10 +70,10 @@ func (s *tunnelLogger) Debugf(format string, args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_DEBUG,
 		Message:  fmt.Sprintf(format, args...) + "\n",
-	})
+	}
 }
 
 func (s *tunnelLogger) Info(args ...interface{}) {
@@ -55,10 +81,10 @@ func (s *tunnelLogger) Info(args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_INFO,
 		Message:  fmt.Sprintln(args...),
-	})
+	}
 }
 
 func (s *tunnelLogger) Infof(format string, args ...interface{}) {
@@ -66,10 +92,10 @@ func (s *tunnelLogger) Infof(format string, args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_INFO,
 		Message:  fmt.Sprintf(format, args...) + "\n",
-	})
+	}
 }
 
 func (s *tunnelLogger) Warn(args ...interface{}) {
@@ -77,10 +103,10 @@ func (s *tunnelLogger) Warn(args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_WARNING,
 		Message:  fmt.Sprintln(args...),
-	})
+	}
 }
 
 func (s *tunnelLogger) Warnf(format string, args ...interface{}) {
@@ -88,10 +114,10 @@ func (s *tunnelLogger) Warnf(format string, args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_WARNING,
 		Message:  fmt.Sprintf(format, args...) + "\n",
-	})
+	}
 }
 
 func (s *tunnelLogger) Error(args ...interface{}) {
@@ -99,10 +125,10 @@ func (s *tunnelLogger) Error(args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_ERROR,
 		Message:  fmt.Sprintln(args...),
-	})
+	}
 }
 
 func (s *tunnelLogger) Errorf(format string, args ...interface{}) {
@@ -110,10 +136,10 @@ func (s *tunnelLogger) Errorf(format string, args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_ERROR,
 		Message:  fmt.Sprintf(format, args...) + "\n",
-	})
+	}
 }
 
 func (s *tunnelLogger) Fatal(args ...interface{}) {
@@ -121,10 +147,10 @@ func (s *tunnelLogger) Fatal(args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_ERROR,
 		Message:  fmt.Sprintln(args...),
-	})
+	}
 
 	os.Exit(1)
 }
@@ -134,10 +160,10 @@ func (s *tunnelLogger) Fatalf(format string, args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_ERROR,
 		Message:  fmt.Sprintf(format, args...) + "\n",
-	})
+	}
 
 	os.Exit(1)
 }
@@ -147,10 +173,10 @@ func (s *tunnelLogger) Done(args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_DONE,
 		Message:  fmt.Sprintln(args...),
-	})
+	}
 }
 
 func (s *tunnelLogger) Donef(format string, args ...interface{}) {
@@ -158,10 +184,10 @@ func (s *tunnelLogger) Donef(format string, args ...interface{}) {
 		return
 	}
 
-	_, _ = s.client.Log(s.ctx, &tunnel.LogMessage{
+	s.logChan <- &tunnel.LogMessage{
 		LogLevel: tunnel.LogLevel_DONE,
 		Message:  fmt.Sprintf(format, args...) + "\n",
-	})
+	}
 }
 
 func (s *tunnelLogger) Print(level logrus.Level, args ...interface{}) {
@@ -239,10 +265,23 @@ func (s *tunnelLogger) WriteString(level logrus.Level, message string) {
 	s.Print(level, message)
 }
 
+func (s *tunnelLogger) WriteLevel(level logrus.Level, message []byte) (int, error) {
+	if s.level < level {
+		return 0, nil
+	}
+
+	s.Print(level, string(message))
+	return len(message), nil
+}
+
 func (s *tunnelLogger) Question(params *survey.QuestionOptions) (string, error) {
 	return "", fmt.Errorf("not supported")
 }
 
 func (s *tunnelLogger) ErrorStreamOnly() log.Logger {
 	return s
+}
+
+func (*tunnelLogger) LogrLogSink() logr.LogSink {
+	return nil
 }

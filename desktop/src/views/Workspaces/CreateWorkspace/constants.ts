@@ -8,6 +8,7 @@ import {
   PhpSvg,
   PhpSvgDark,
   PythonSvg,
+  RubySvg,
   RustSvg,
   RustSvgDark,
 } from "../../../images"
@@ -26,7 +27,7 @@ export const WORKSPACE_EXAMPLES = [
   {
     image: GoSvg,
     imageDark: GoSvgDark,
-    source: "https://github.com/microsoft/vscode-remote-try-go",
+    source: "https://github.com/loft-sh/devpod-example-go",
     name: "Try Go",
   },
   {
@@ -50,6 +51,15 @@ export const WORKSPACE_EXAMPLES = [
     image: CppSvg,
     source: "https://github.com/microsoft/vscode-remote-try-cpp",
     name: "Try C++",
+  },
+]
+
+export const COMMUNITY_WORKSPACE_EXAMPLES = [
+  {
+    image: RubySvg,
+    imageDark: RubySvg,
+    source: "https://github.com/loft-sh/devpod-quickstart-ruby",
+    name: "Try Ruby",
   },
   {
     image: DotnetcoreSvg,

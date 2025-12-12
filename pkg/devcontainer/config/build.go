@@ -2,7 +2,6 @@ package config
 
 import (
 	"github.com/loft-sh/devpod/pkg/dockerfile"
-	provider2 "github.com/loft-sh/devpod/pkg/provider"
 )
 
 const (
@@ -11,17 +10,12 @@ const (
 
 	DevPodContextFeatureFolder      = ".devpod-internal"
 	DevPodDockerlessBuildInfoFolder = "/workspaces/.dockerless"
+
+	WorkspaceDaemonConfigExtraEnvVar = "DEVPOD_WORKSPACE_DAEMON_CONFIG"
 )
 
 func GetDockerLabelForID(id string) []string {
 	return []string{DockerIDLabel + "=" + id}
-}
-
-type BuildOptions struct {
-	provider2.CLIOptions
-
-	Platform string
-	NoBuild  bool
 }
 
 type BuildInfo struct {
@@ -29,6 +23,8 @@ type BuildInfo struct {
 	ImageMetadata *ImageMetadataConfig
 	ImageName     string
 	PrebuildHash  string
+	RegistryCache string
+	Tags          []string
 
 	Dockerless *BuildInfoDockerless
 }

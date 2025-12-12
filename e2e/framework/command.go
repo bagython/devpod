@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/loft-sh/devpod/pkg/client"
 	provider2 "github.com/loft-sh/devpod/pkg/provider"
@@ -98,6 +100,28 @@ func (f *Framework) DevPodUp(ctx context.Context, additionalArgs ...string) erro
 	return nil
 }
 
+func (f *Framework) DevPodUpRecreate(ctx context.Context, additionalArgs ...string) error {
+	upArgs := []string{"up", "--recreate", "--debug", "--ide", "none"}
+	upArgs = append(upArgs, additionalArgs...)
+
+	_, _, err := f.ExecCommandCapture(ctx, upArgs)
+	if err != nil {
+		return fmt.Errorf("devpod up --recreate failed: %s", err.Error())
+	}
+	return nil
+}
+
+func (f *Framework) DevPodUpReset(ctx context.Context, additionalArgs ...string) error {
+	upArgs := []string{"up", "--reset", "--debug", "--ide", "none"}
+	upArgs = append(upArgs, additionalArgs...)
+
+	_, _, err := f.ExecCommandCapture(ctx, upArgs)
+	if err != nil {
+		return fmt.Errorf("devpod up --reset failed: %s", err.Error())
+	}
+	return nil
+}
+
 func (f *Framework) DevPodSSH(ctx context.Context, workspace string, command string) (string, error) {
 	out, err := f.ExecCommandOutput(ctx, []string{"ssh", workspace, "--command", command})
 	if err != nil {
@@ -122,6 +146,15 @@ func (f *Framework) DevPodProviderOptionsCheckNamespaceDescription(ctx context.C
 	return nil
 }
 
+func (f *Framework) DevPodProviderList(ctx context.Context, extraArgs ...string) error {
+	baseArgs := []string{"provider", "list"}
+	err := f.ExecCommand(ctx, false, true, "", append(baseArgs, extraArgs...))
+	if err != nil {
+		return fmt.Errorf("devpod provider list failed: %s", err.Error())
+	}
+	return nil
+}
+
 func (f *Framework) DevPodProviderUse(ctx context.Context, provider string, extraArgs ...string) error {
 	baseArgs := []string{"provider", "use", provider}
 	err := f.ExecCommand(ctx, false, true, "", append(baseArgs, extraArgs...))
@@ -136,7 +169,7 @@ func (f *Framework) DevPodStatus(ctx context.Context, extraArgs ...string) (clie
 	baseArgs = append(baseArgs, extraArgs...)
 	stdout, err := f.ExecCommandOutput(ctx, baseArgs)
 	if err != nil {
-		return client.WorkspaceStatus{}, fmt.Errorf("devpod stop failed: %s", err.Error())
+		return client.WorkspaceStatus{}, fmt.Errorf("devpod status failed: %s", err.Error())
 	}
 
 	status := &client.WorkspaceStatus{}
@@ -173,8 +206,9 @@ func (f *Framework) DevPodProviderDelete(ctx context.Context, args ...string) er
 	baseArgs = append(baseArgs, args...)
 	err := f.ExecCommand(ctx, false, false, "", baseArgs)
 	if err != nil {
-		return fmt.Errorf("devpod provider delete failed: %s", err.Error())
+		return err
 	}
+
 	return nil
 }
 
@@ -207,6 +241,7 @@ func (f *Framework) DevPodMachineDelete(args []string) error {
 	}
 	return nil
 }
+
 func (f *Framework) DevPodWorkspaceStop(ctx context.Context, extraArgs ...string) error {
 	baseArgs := []string{"stop"}
 	baseArgs = append(baseArgs, extraArgs...)
@@ -218,4 +253,105 @@ func (f *Framework) DevPodWorkspaceDelete(ctx context.Context, workspace string,
 	baseArgs = append(baseArgs, extraArgs...)
 
 	return f.ExecCommand(ctx, false, true, fmt.Sprintf("Successfully deleted workspace '%s'", workspace), baseArgs)
+}
+
+func (f *Framework) SetupGPG(tmpDir string) error {
+	if _, err := exec.LookPath("gpg"); err != nil {
+		err := exec.Command("sudo", "apt-get", " install", "gnupg2", "-y").Run()
+		if err != nil {
+			return nil
+		}
+	}
+
+	err := exec.Command("gpg", "--import", filepath.Join(tmpDir, "gpg-public.key")).Run()
+	if err != nil {
+		return nil
+	}
+
+	err = exec.Command("gpg", "--import", filepath.Join(tmpDir, "gpg-private.key")).Run()
+	if err != nil {
+		return nil
+	}
+
+	err = exec.Command("gpgconf", "--kill", "gpg-agent").Run()
+	if err != nil {
+		return nil
+	}
+
+	err = exec.Command("gpg-agent", "--homedir", "$HOME/.gnupg", "--use-standard-socket", "--daemon").Run()
+	if err != nil {
+		return nil
+	}
+
+	return exec.Command("gpg", "-k").Run()
+}
+
+func (f *Framework) DevPodSSHGpgTestKey(ctx context.Context, workspace string) error {
+	pubKeyB, err := exec.Command("sh", "-c", "gpg -k --with-colons 2>/dev/null | grep sec | base64 -w0").Output()
+	if err != nil {
+		return err
+	}
+
+	// First run to trigger the first forwarding
+	stdout, _, err := f.ExecCommandCapture(ctx, []string{
+		"ssh",
+		"--agent-forwarding",
+		"--gpg-agent-forwarding",
+		"--command",
+		"gpg -k --with-colons 2>/dev/null |grep sec |  base64 -w0", workspace,
+	})
+	if err != nil {
+		return err
+	}
+
+	if stdout != string(pubKeyB) {
+		return fmt.Errorf("devpod gpg public key forwarding failed, expected %s, got %s", string(pubKeyB), stdout)
+	}
+
+	return nil
+}
+
+func (f *Framework) DevpodPortTest(ctx context.Context, port string, workspace string) error {
+	// First run to trigger the first forwarding
+	_, _, err := f.ExecCommandCapture(ctx, []string{
+		"ssh",
+		"--forward-ports", port, workspace,
+	})
+	return err
+}
+
+func (f *Framework) DevPodProviderFindOption(ctx context.Context, provider string, searchStr string, extraArgs ...string) error {
+	baseArgs := []string{"provider", "options", provider}
+	err := f.ExecCommand(ctx, false, true, searchStr, append(baseArgs, extraArgs...))
+	if err != nil {
+		return fmt.Errorf("devpod provider use failed: %s", err.Error())
+	}
+	return nil
+}
+
+func (f *Framework) DevPodContextCreate(ctx context.Context, name string, extraArgs ...string) error {
+	baseArgs := []string{"context", "create", name}
+	err := f.ExecCommand(ctx, false, true, "", append(baseArgs, extraArgs...))
+	if err != nil {
+		return fmt.Errorf("devpod context create failed: %s", err.Error())
+	}
+	return nil
+}
+
+func (f *Framework) DevPodContextUse(ctx context.Context, name string, extraArgs ...string) error {
+	baseArgs := []string{"context", "use", name}
+	err := f.ExecCommand(ctx, false, true, "", append(baseArgs, extraArgs...))
+	if err != nil {
+		return fmt.Errorf("devpod context use failed: %s", err.Error())
+	}
+	return nil
+}
+
+func (f *Framework) DevPodContextDelete(ctx context.Context, name string, extraArgs ...string) error {
+	baseArgs := []string{"context", "delete", name}
+	err := f.ExecCommand(ctx, false, true, "", append(baseArgs, extraArgs...))
+	if err != nil {
+		return fmt.Errorf("devpod context delete failed: %s", err.Error())
+	}
+	return nil
 }

@@ -37,16 +37,29 @@ export function useWelcomeModal() {
     navigate(Routes.WORKSPACE_CREATE)
   }, [navigate, onClose])
 
-  // Only show the welcome modal once
+  // Open the welcome modal on first visit, except if we start with a `SetupPro` event
   useEffect(() => {
     const maybeFirstVisit = localStorage.getItem(IS_FIRST_VISIT_KEY)
-    if (maybeFirstVisit === null && !isOpen) {
+    let shouldShowWelcomeModal = maybeFirstVisit === null && !isOpen
+
+    const listenerPromise = client.subscribe("event", (event) => {
+      if (event.type === "SetupPro") {
+        shouldShowWelcomeModal = false
+        onClose()
+      }
+    })
+
+    if (shouldShowWelcomeModal) {
       onOpen()
       localStorage.setItem(IS_FIRST_VISIT_KEY, "false")
 
       return
     }
-  }, [isOpen, onOpen])
+
+    return () => {
+      listenerPromise.then((unsubscribe) => unsubscribe())
+    }
+  }, [isOpen, onClose, onOpen])
 
   const modal = useMemo(() => {
     return (
@@ -61,13 +74,13 @@ export function useWelcomeModal() {
         <ModalOverlay />
         <ModalContent>
           {isCancellable && <ModalCloseButton />}
-          <ModalBody>
+          <ModalBody borderRadius={"md"}>
             <VStack align="start" spacing="8" paddingX="4" paddingTop="4">
               <Steps finishText="Get Started" onFinish={handleSetupFinished}>
                 <Step>
                   <HStack width="full" justifyContent="space-between" alignItems="center">
                     <HStack>
-                      <Heading as="h1" size="lg" marginRight="2">
+                      <Heading as="h1" size="lg">
                         Welcome to
                       </Heading>
                       <DevpodWordmark width="40" height="16" />
@@ -85,9 +98,7 @@ export function useWelcomeModal() {
                     cloud. It&apos;s also possible to extend DevPod and write your own custom
                     providers. <br />
                     For more information, head over to our{" "}
-                    <Link
-                      color="primary.600"
-                      onClick={() => client.openLink("https://devpod.sh/docs")}>
+                    <Link onClick={() => client.open("https://devpod.sh/docs")}>
                       documentation.
                     </Link>
                   </Text>
@@ -106,13 +117,12 @@ export function useWelcomeModal() {
                   <Text>
                     DevPod ships with a powerful CLI that allows you to create, manage and connect
                     to your workspaces and providers. You can either{" "}
-                    <Link
-                      onClick={() => client.openLink("https://github.com/loft-sh/devpod/releases")}>
+                    <Link onClick={() => client.open("https://github.com/loft-sh/devpod/releases")}>
                       download the standalone binary
                     </Link>{" "}
                     or directly add it to your <Code>$PATH</Code>.
                     <br />
-                    <Text as="span" color="gray.500">
+                    <Text as="span" variant="muted">
                       Feel free to skip this step. You can always install the CLI from the{" "}
                       <Code variant="decorative">Settings</Code> tab.
                     </Text>
@@ -122,7 +132,7 @@ export function useWelcomeModal() {
                       {installCLIButton}
                       {installCLIBadge}
                     </HStack>
-                    <Text color="gray.500" fontSize="sm">
+                    <Text variant="muted" fontSize="sm">
                       {installCLIHelpText}
                     </Text>
                   </VStack>
@@ -140,7 +150,7 @@ export function useWelcomeModal() {
                   <Text>
                     Workspaces are your reproducible development environment on a per-project basis.
                     Turn a local folder, git repository or docker container into a workspace and
-                    connect it to your favorite coding tool. Or just ssh into them and go crazy.
+                    connect it to your favorite coding tool. Or just ssh into them start developing.
                   </Text>
                 </Step>
               </Steps>

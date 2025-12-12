@@ -6,10 +6,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path"
-	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/loft-sh/devpod/pkg/devcontainer/config"
 	"github.com/loft-sh/devpod/pkg/driver"
@@ -23,9 +22,9 @@ import (
 )
 
 type Runner interface {
-	Up(ctx context.Context, options UpOptions) (*config.Result, error)
+	Up(ctx context.Context, options UpOptions, timeout time.Duration) (*config.Result, error)
 
-	Build(ctx context.Context, options config.BuildOptions) (string, error)
+	Build(ctx context.Context, options provider2.BuildOptions) (string, error)
 
 	Find(ctx context.Context) (*config.ContainerDetails, error)
 
@@ -41,6 +40,8 @@ type Runner interface {
 	Stop(ctx context.Context) error
 
 	Delete(ctx context.Context) error
+
+	Logs(ctx context.Context, writer io.Writer) error
 }
 
 func NewRunner(
@@ -54,7 +55,6 @@ func NewRunner(
 	}
 
 	// we use the workspace uid as id to avoid conflicts between container names
-
 	return &runner{
 		Driver: driver,
 
@@ -75,7 +75,6 @@ type runner struct {
 	AgentDownloadURL string
 
 	LocalWorkspaceFolder string
-	SubstitutionContext  *config.SubstitutionContext
 
 	ID string
 
@@ -85,51 +84,53 @@ type runner struct {
 type UpOptions struct {
 	provider2.CLIOptions
 
-	NoBuild    bool
-	ForceBuild bool
+	NoBuild       bool
+	ForceBuild    bool
+	RegistryCache string
 }
 
-func (r *runner) Up(ctx context.Context, options UpOptions) (*config.Result, error) {
-	// download workspace source before recreating container
-	_, isDockerDriver := r.Driver.(driver.DockerDriver)
-	if options.Recreate && !isDockerDriver {
-		// TODO: for drivers other than docker and recreate is true, we need to download the complete context here first
-		return nil, fmt.Errorf("rebuilding the workspace is currently not supported for non-docker drivers")
-	}
+func (r *runner) Up(ctx context.Context, options UpOptions, timeout time.Duration) (*config.Result, error) {
+	r.Log.Debugf("Up devcontainer for workspace '%s' with timeout %s", r.WorkspaceConfig.Workspace.ID, timeout)
 
-	// prepare config
-	substitutedConfig, err := r.prepare(options.CLIOptions)
+	substitutedConfig, substitutionContext, err := r.getSubstitutedConfig(options.CLIOptions)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanupBuildInformation(substitutedConfig.Config)
 
-	// remove build information
-	defer func() {
-		contextPath := config.GetContextPath(substitutedConfig.Config)
-		_ = os.RemoveAll(filepath.Join(contextPath, config.DevPodContextFeatureFolder))
-	}()
-
-	// run initializeCommand
-	err = runInitializeCommand(r.LocalWorkspaceFolder, substitutedConfig.Config, r.Log)
-	if err != nil {
-		return nil, err
-	}
-
-	// check if its a compose devcontainer.json
-	var result *config.Result
-	if isDockerFileConfig(substitutedConfig.Config) || substitutedConfig.Config.Image != "" {
-		result, err = r.runSingleContainer(
-			ctx,
-			substitutedConfig,
-			options,
-		)
-		if err != nil {
+	// do not run initialize command in platform mode
+	if !options.CLIOptions.Platform.Enabled {
+		if err := runInitializeCommand(r.LocalWorkspaceFolder, substitutedConfig.Config, options.InitEnv, r.Log); err != nil {
 			return nil, err
 		}
-	} else if isDockerComposeConfig(substitutedConfig.Config) {
-		result, err = r.runDockerCompose(ctx, substitutedConfig, options)
-		if err != nil {
-			return nil, err
+	} else if len(substitutedConfig.Config.InitializeCommand) > 0 {
+		r.Log.Info("Skipping initializeCommand on platform")
+	}
+
+	switch {
+	case isDockerFileConfig(substitutedConfig.Config),
+		substitutedConfig.Config.Image != "",
+		substitutedConfig.Config.ContainerID != "":
+		return r.runSingleContainer(
+			ctx,
+			substitutedConfig,
+			substitutionContext,
+			options,
+			timeout,
+		)
+	case isDockerComposeConfig(substitutedConfig.Config):
+		return r.runDockerCompose(ctx, substitutedConfig, substitutionContext, options, timeout)
+	default:
+		return r.runDefaultContainer(ctx, options, substitutedConfig, substitutionContext, timeout)
+	}
+}
+
+func (r *runner) runDefaultContainer(ctx context.Context, options UpOptions, substitutedConfig *config.SubstitutedConfig, substitutionContext *config.SubstitutionContext, timeout time.Duration) (*config.Result, error) {
+	if options.FallbackImage != "" {
+		r.Log.Warn("dev container config is missing one of \"image\", \"dockerFile\" or \"dockerComposeFile\" properties, using fallback image " + options.FallbackImage)
+
+		substitutedConfig.Config.ImageContainer = config.ImageContainer{
+			Image: options.FallbackImage,
 		}
 	} else {
 		r.Log.Warn("dev container config is missing one of \"image\", \"dockerFile\" or \"dockerComposeFile\" properties, defaulting to auto-detection")
@@ -142,84 +143,10 @@ func (r *runner) Up(ctx context.Context, options UpOptions) (*config.Result, err
 		if language.MapConfig[lang] == nil {
 			return nil, fmt.Errorf("could not detect project language and dev container config is missing one of \"image\", \"dockerFile\" or \"dockerComposeFile\" properties")
 		}
-
 		substitutedConfig.Config.ImageContainer = language.MapConfig[lang].ImageContainer
-		result, err = r.runSingleContainer(ctx, substitutedConfig, options)
-		if err != nil {
-			return nil, err
-		}
 	}
 
-	// return result
-	return result, nil
-}
-
-func (r *runner) prepare(
-	options provider2.CLIOptions,
-) (*config.SubstitutedConfig, error) {
-	rawParsedConfig, err := config.ParseDevContainerJSON(
-		r.LocalWorkspaceFolder,
-		r.WorkspaceConfig.Workspace.DevContainerPath,
-	)
-
-	// We want to fail only in case of real errors, non-existing devcontainer.jon
-	// will be gracefully handled by the auto-detection mechanism
-	if err != nil && !os.IsNotExist(err) {
-		return nil, errors.Wrap(err, "parsing devcontainer.json")
-	} else if rawParsedConfig == nil {
-		r.Log.Infof("Couldn't find a devcontainer.json")
-		r.Log.Infof("Try detecting project programming language...")
-		defaultConfig := language.DefaultConfig(r.LocalWorkspaceFolder, r.Log)
-		defaultConfig.Origin = path.Join(filepath.ToSlash(r.LocalWorkspaceFolder), ".devcontainer.json")
-		err = config.SaveDevContainerJSON(defaultConfig)
-		if err != nil {
-			return nil, errors.Wrap(err, "write default devcontainer.json")
-		}
-
-		rawParsedConfig = defaultConfig
-	}
-	configFile := rawParsedConfig.Origin
-
-	// get workspace folder within container
-	workspaceMount, containerWorkspaceFolder := getWorkspace(
-		r.LocalWorkspaceFolder,
-		r.WorkspaceConfig.Workspace.ID,
-		rawParsedConfig,
-	)
-	r.SubstitutionContext = &config.SubstitutionContext{
-		DevContainerID:           r.ID,
-		LocalWorkspaceFolder:     r.LocalWorkspaceFolder,
-		ContainerWorkspaceFolder: containerWorkspaceFolder,
-		Env:                      config.ListToObject(os.Environ()),
-
-		WorkspaceMount: workspaceMount,
-	}
-
-	// substitute & load
-	parsedConfig := &config.DevContainerConfig{}
-	err = config.Substitute(r.SubstitutionContext, rawParsedConfig, parsedConfig)
-	if err != nil {
-		return nil, err
-	}
-	if parsedConfig.WorkspaceFolder != "" {
-		r.SubstitutionContext.ContainerWorkspaceFolder = parsedConfig.WorkspaceFolder
-	}
-	if parsedConfig.WorkspaceMount != "" {
-		r.SubstitutionContext.WorkspaceMount = parsedConfig.WorkspaceMount
-	}
-
-	if options.DevContainerImage != "" {
-		parsedConfig.Build = config.ConfigBuildOptions{}
-		parsedConfig.Dockerfile = ""
-		parsedConfig.DockerfileContainer = config.DockerfileContainer{}
-		parsedConfig.ImageContainer = config.ImageContainer{Image: options.DevContainerImage}
-	}
-
-	parsedConfig.Origin = configFile
-	return &config.SubstitutedConfig{
-		Config: parsedConfig,
-		Raw:    rawParsedConfig,
-	}, nil
+	return r.runSingleContainer(ctx, substitutedConfig, substitutionContext, options, timeout)
 }
 
 func (r *runner) Command(
@@ -242,24 +169,41 @@ func (r *runner) Find(ctx context.Context) (*config.ContainerDetails, error) {
 	return containerDetails, nil
 }
 
+func (r *runner) Logs(ctx context.Context, writer io.Writer) error {
+	return r.Driver.GetDevContainerLogs(ctx, r.ID, writer, writer)
+}
+
 func isDockerFileConfig(config *config.DevContainerConfig) bool {
-	return config.Dockerfile != "" || config.Build.Dockerfile != ""
+	return config.GetDockerfile() != ""
 }
 
 func runInitializeCommand(
 	workspaceFolder string,
 	config *config.DevContainerConfig,
+	extraEnvVars []string,
 	log log.Logger,
 ) error {
 	if len(config.InitializeCommand) == 0 {
 		return nil
 	}
 
+	shellArgs := []string{"sh", "-c"}
+	// According to the devcontainer spec, `initializeCommand` needs to be run on the host.
+	// On Windows we can't assume everyone has `sh` added to their PATH so we need to use Windows default shell (usually cmd.exe)
+	if runtime.GOOS == "windows" {
+		comSpec := os.Getenv("COMSPEC")
+		if comSpec != "" {
+			shellArgs = []string{comSpec, "/c"}
+		} else {
+			shellArgs = []string{"cmd.exe", "/c"}
+		}
+	}
+
 	for _, cmd := range config.InitializeCommand {
 		// should run in shell?
 		var args []string
 		if len(cmd) == 1 {
-			args = []string{"sh", "-c", cmd[0]}
+			args = []string{shellArgs[0], shellArgs[1], cmd[0]}
 		} else {
 			args = cmd
 		}
@@ -267,12 +211,18 @@ func runInitializeCommand(
 		// run the command
 		log.Infof("Running initializeCommand from devcontainer.json: '%s'", strings.Join(args, " "))
 		writer := log.Writer(logrus.InfoLevel, false)
+		errwriter := log.Writer(logrus.ErrorLevel, false)
 		defer writer.Close()
+		defer errwriter.Close()
 
 		cmd := exec.Command(args[0], args[1:]...)
+		env := cmd.Environ()
+		env = append(env, extraEnvVars...)
+
 		cmd.Stdout = writer
-		cmd.Stderr = writer
+		cmd.Stderr = errwriter
 		cmd.Dir = workspaceFolder
+		cmd.Env = env
 		err := cmd.Run()
 		if err != nil {
 			return err

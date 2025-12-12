@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime/debug"
 
 	"github.com/loft-sh/devpod/cmd/agent"
+	"github.com/loft-sh/devpod/cmd/completion"
 	"github.com/loft-sh/devpod/cmd/context"
 	"github.com/loft-sh/devpod/cmd/flags"
 	"github.com/loft-sh/devpod/cmd/helper"
@@ -24,9 +24,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var (
-	globalFlags *flags.GlobalFlags
-)
+var globalFlags *flags.GlobalFlags
 
 // NewRootCmd returns a new root command
 func NewRootCmd() *cobra.Command {
@@ -36,8 +34,6 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cobraCmd *cobra.Command, args []string) error {
-
-
 			if globalFlags.LogOutput == "json" {
 				log2.Default.SetFormat(log2.JSONFormat)
 			} else if globalFlags.LogOutput == "raw" {
@@ -56,6 +52,11 @@ func NewRootCmd() *cobra.Command {
 
 			if globalFlags.DevPodHome != "" {
 				_ = os.Setenv(config.DEVPOD_HOME, globalFlags.DevPodHome)
+			}
+
+			devPodConfig, err := config.LoadConfig(globalFlags.Context, globalFlags.Provider)
+			if err == nil {
+				telemetry.StartCLI(devPodConfig, cobraCmd)
 			}
 
 			return nil
@@ -117,6 +118,7 @@ func BuildRoot() *cobra.Command {
 	rootCmd := NewRootCmd()
 	persistentFlags := rootCmd.PersistentFlags()
 	globalFlags = flags.SetGlobalFlags(persistentFlags)
+	_ = completion.RegisterFlagCompletionFuns(rootCmd, globalFlags)
 
 	rootCmd.AddCommand(agent.NewAgentCmd(globalFlags))
 	rootCmd.AddCommand(provider.NewProviderCmd(globalFlags))
@@ -125,7 +127,7 @@ func BuildRoot() *cobra.Command {
 	rootCmd.AddCommand(ide.NewIDECmd(globalFlags))
 	rootCmd.AddCommand(machine.NewMachineCmd(globalFlags))
 	rootCmd.AddCommand(context.NewContextCmd(globalFlags))
-	rootCmd.AddCommand(pro.NewProCmd(globalFlags))
+	rootCmd.AddCommand(pro.NewProCmd(globalFlags, log2.Default))
 	rootCmd.AddCommand(NewUpCmd(globalFlags))
 	rootCmd.AddCommand(NewDeleteCmd(globalFlags))
 	rootCmd.AddCommand(NewSSHCmd(globalFlags))
@@ -135,5 +137,11 @@ func BuildRoot() *cobra.Command {
 	rootCmd.AddCommand(NewStatusCmd(globalFlags))
 	rootCmd.AddCommand(NewBuildCmd(globalFlags))
 	rootCmd.AddCommand(NewLogsDaemonCmd(globalFlags))
+	rootCmd.AddCommand(NewExportCmd(globalFlags))
+	rootCmd.AddCommand(NewImportCmd(globalFlags))
+	rootCmd.AddCommand(NewLogsCmd(globalFlags))
+	rootCmd.AddCommand(NewUpgradeCmd())
+	rootCmd.AddCommand(NewTroubleshootCmd(globalFlags))
+	rootCmd.AddCommand(NewPingCmd(globalFlags))
 	return rootCmd
 }
